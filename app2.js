@@ -172,7 +172,7 @@ function setTab(t) {
   if (t === 'meet') store.set('seenMeet', Date.now());
   if (t !== 'map') closeSheet();
   renderTabs(); renderView(); $('#view').scrollTop = 0;
-  if (t === 'map' && map) setTimeout(() => map.invalidateSize(), 300);
+  if (t === 'map' && map) setTimeout(() => map.resize(), 300);
 }
 function applyTheme() {
   const t = store.get('theme', 'auto');
@@ -200,8 +200,9 @@ document.addEventListener('click', async e => {
     case 'clear': S.f = { open: false, walk: false, kind: null, hk: false, fav: false, meet: false, cat: null }; S.q = ''; $('#q').value = ''; renderAll(); break;
     case 'open-r': closeModal(); if (S.tab !== 'map' && !isDesk()) setTab('map'); openRestaurant(id); break;
     case 'close-sheet': closeSheet(); break;
-    case 'locate': if (isRouting()) { RT.follow = true; if (RT.meMk) { panToMe(RT.meMk.getLatLng()); break; } } locate(); break;
-    case 'basemap': S.basemap = S.basemap === 'sat' ? 'map' : 'sat'; store.set('basemap', S.basemap); renderTop(); setTiles(); break;
+    case 'locate': if (isRouting()) { RT.follow = true; if (RT.meMk) { panToMe(RT.meMk.getLngLat().toArray()); break; } } locate(); break;
+    case 'toggle3d': toggle3d(); break;
+    case 'basemap': S.basemap = S.basemap === 'sat' ? 'map' : 'sat'; store.set('basemap2', S.basemap); renderTop(); setTiles(); break;
     case 'route': startRoute(id); break;
     case 'route-mode': if (RT.mode !== el.dataset.v) { RT.mode = el.dataset.v; computeRoute(); } break;
     case 'route-live': toggleLive(); break;
@@ -213,7 +214,7 @@ document.addEventListener('click', async e => {
     case 'origin': openOrigin(); break;
     case 'pick-base': closeModal(); closeSheet(); if (S.tab !== 'map') setTab('map'); S.panel = 'peek'; renderTabs(); S.picking = true; toast('הקישו על המפה במקום שממנו יוצאים לאכול'); break;
     case 'default-base': closeModal(); setOrigin(DEFAULT_ORIGIN); $('[data-act="locate"]').classList.remove('on'); frameNearby(); break;
-    case 'set-base': map.closePopup(); setOrigin({ lat: +el.dataset.lat, lng: +el.dataset.lng, label: 'הנקודה שבחרת', src: 'custom' }); $('[data-act="locate"]').classList.remove('on'); toast('נקודת המוצא עודכנה'); break;
+    case 'set-base': if (basePopup) basePopup.remove(); setOrigin({ lat: +el.dataset.lat, lng: +el.dataset.lng, label: 'הנקודה שבחרת', src: 'custom' }); $('[data-act="locate"]').classList.remove('on'); toast('נקודת המוצא עודכנה'); break;
     case 'now': openNow(); break;
     case 'new-meet': openMeetForm(id); break;
     case 'auth': openAuth(el.dataset.mode || 'register'); break;
@@ -353,7 +354,7 @@ function ilToDate(ymd, time) {
 (() => {
   const h = $('#handle'); let y0 = null;
   const order = ['peek', 'half', 'full'];
-  const move = dir => { const i = order.indexOf(S.panel); S.panel = order[Math.max(0, Math.min(2, i + dir))]; renderTabs(); setTimeout(() => map && map.invalidateSize(), 300); };
+  const move = dir => { const i = order.indexOf(S.panel); S.panel = order[Math.max(0, Math.min(2, i + dir))]; renderTabs(); setTimeout(() => map && map.resize(), 300); };
   h.addEventListener('click', () => { if (S.tab !== 'map') return; S.panel = S.panel === 'full' ? 'half' : S.panel === 'half' ? 'full' : 'half'; renderTabs(); });
   const start = ev => { y0 = (ev.touches ? ev.touches[0] : ev).clientY; };
   const end = ev => { if (y0 == null || S.tab !== 'map') return; const y = (ev.changedTouches ? ev.changedTouches[0] : ev).clientY; const d = y - y0; y0 = null; if (Math.abs(d) > 28) { ev.preventDefault(); move(d < 0 ? 1 : -1); } };
@@ -379,11 +380,12 @@ async function boot() {
   applyTheme();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (store.get('theme', 'auto') === 'auto' && map) setTiles(); });
   S.origin = store.get('origin', null) || DEFAULT_ORIGIN;
-  S.basemap = store.get('basemap', 'map');
+  S.basemap = store.get('basemap2', 'sat');
   try {
     S.R = await (await fetch('restaurants.json', { cache: 'no-cache' })).json();
   } catch { S.R = []; toast('לא הצלחנו לטעון את רשימת המסעדות. רעננו את הדף'); }
   S.R.forEach(r => { S.RM.set(r.id, r); r._d = dist(S.origin, r); });
+  spreadPins();
   initMap(); drawOrigin();
   renderAll();
   if (!location.hash.startsWith('#r-')) setTimeout(() => frameNearby(), 50);
@@ -398,6 +400,6 @@ async function boot() {
   setInterval(() => { if (document.visibilityState === 'visible' && S.token) refresh(); }, 45000);
   setInterval(() => { if (document.visibilityState === 'visible') { renderView(); } }, 60000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.token) refresh(); });
-  window.addEventListener('resize', () => map && map.invalidateSize());
+  window.addEventListener('resize', () => map && map.resize());
 }
 boot();

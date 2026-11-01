@@ -536,3 +536,32 @@ body.routing .me-dot:not(.rt) { display: none; }
   body.routing .fab { display: none !important; }
   .hero.photos { height: 220px; }
 }
+
+/* ---------- MapLibre map ---------- */
+.maplibregl-map { font-family: var(--f-body); }
+.pin-wrap.mk { width: 38px; height: 46px; padding: 0; border: 0; background: none; display: block; cursor: pointer; }
+#map.far .pin { transform: rotate(-45deg) scale(.58); }
+#map.far .pin.sel { transform: rotate(-45deg) scale(.9); }
+#map.far .pin .mcount { display: none; }
+.round-btn .t3d { font: 700 15px/1 var(--f-body); letter-spacing: .3px; }
+.maplibregl-popup-content { background: var(--surface); color: var(--ink); border-radius: 14px; box-shadow: var(--shadow); padding: 12px 14px; font-size: 14px; }
+.maplibregl-popup-close-button { font-size: 18px; color: var(--ink-3); left: 4px; right: auto; }
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--surface); }
+.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--surface); }
+.maplibregl-ctrl-attrib { font-size: 10px; }
+body.sat .maplibregl-ctrl-attrib, body.sat .maplibregl-ctrl-attrib.maplibregl-compact { background: rgba(0,0,0,.45); color: #eee; }
+body.sat .maplibregl-ctrl-attrib a { color: #fff; }
+body.sat .base-dot { box-shadow: 0 0 0 3px rgba(255,255,255,.6), var(--shadow); }
+@media (max-width: 899px) {
+  .maplibregl-ctrl-top-left { top: calc(118px + var(--top)); left: max(6px, env(safe-area-inset-left, 0px)); }
+  body:not(.rotated) .maplibregl-ctrl-top-left { display: none; }
+  body.tab-other .maplibregl-ctrl-top-left, body.sheet-open .maplibregl-ctrl-top-left { display: none; }
+  .maplibregl-ctrl-bottom-left { bottom: calc(62px + var(--bot)); }
+}
+.hero.cat-photo { height: 200px; }
+.hero-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+.hero.cat-photo .hero-big { z-index: 2; width: 54px; height: 54px; border-radius: 16px; background: var(--c); border: 2px solid rgba(255,255,255,.7); bottom: 14px; }
+.hero.cat-photo .hero-big .ic { width: 30px; height: 30px; }
+.hero.cat-photo::after { z-index: 1; background: linear-gradient(to top, rgba(0,0,0,.45), transparent 55%); }
+.ph-note { position: absolute; z-index: 3; bottom: 12px; inset-inline-end: 12px; color: #fff; font-size: 11.5px; font-weight: 600; background: rgba(0,0,0,.45); padding: 3px 8px; border-radius: 8px; }
+.thumb { background: var(--c); }

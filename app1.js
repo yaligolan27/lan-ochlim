@@ -214,33 +214,104 @@ function downloadIcs(m) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
 }
 
-/* ================= map ================= */
-let map, cluster, tiles, originMarker, gAttr = '';
+/* ================= map (MapLibre GL: satellite by default, rotate, tilt, 3D buildings) ================= */
+let map, originMarker = null, basePopup = null;
 const markers = new Map();
+const OFM = 'https://tiles.openfreemap.org';
+const ESRI_SAT = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const ESRI_ATTR = 'צילום לווין: Esri, Maxar, Earthstar Geographics';
+const OFM_ATTR = '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
+const HE_LABEL = ['coalesce', ['get', 'name:he'], ['get', 'name'], ['get', 'name_en']];
+const styleCache = {};
+const pos = r => r._pos || [r.lng, r.lat];
 function darkMode() {
   const t = document.documentElement.dataset.theme;
   return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
 }
-function initMap() {
-  if (window.maplibregl && maplibregl.getRTLTextPluginStatus && maplibregl.getRTLTextPluginStatus() === 'unavailable') {
-    try { const pr = maplibregl.setRTLTextPlugin('https://cdn.jsdelivr.net/npm/@mapbox/mapbox-gl-rtl-text@0.3.0/dist/mapbox-gl-rtl-text.js', false); if (pr && pr.catch) pr.catch(() => {}); } catch (e) { console.warn(e); }
-  }
-  map = L.map('map', { zoomControl: false, attributionControl: true, tapTolerance: 20, zoomSnap: 0.5, minZoom: 7, maxZoom: 19 })
-    .setView([S.origin.lat, S.origin.lng], 14);
-  map.attributionControl.setPrefix(false);
-  map.attributionControl.setPosition('bottomleft');
-  if (isDesk()) L.control.zoom({ position: 'topleft', zoomInTitle: 'התקרבות', zoomOutTitle: 'התרחקות' }).addTo(map);
-  setTiles();
-  cluster = L.markerClusterGroup({
-    maxClusterRadius: 42, disableClusteringAtZoom: 14, showCoverageOnHover: false, spiderfyOnMaxZoom: true,
-    iconCreateFunction: c => L.divIcon({ html: `<div class="cluster">${c.getChildCount()}</div>`, className: 'pin-wrap', iconSize: [44, 44] }),
+/* Restaurants that share a building get spread a few metres apart so every pin can be tapped. */
+function spreadPins() {
+  const groups = new Map();
+  S.R.forEach(r => { const k = `${r.lat.toFixed(4)},${r.lng.toFixed(4)}`; (groups.get(k) || groups.set(k, []).get(k)).push(r); });
+  groups.forEach(g => {
+    if (g.length < 2) return;
+    g.forEach((r, i) => { const a = (2 * Math.PI * i) / g.length; r._pos = [r.lng + 0.00016 * Math.cos(a), r.lat + 0.00013 * Math.sin(a)]; });
   });
-  map.addLayer(cluster);
-  map.on('contextmenu', e => askBase(e.latlng));
+}
+async function ofmStyle(name) {
+  if (!styleCache[name]) styleCache[name] = await (await fetch(`${OFM}/styles/${name}`)).json();
+  return JSON.parse(JSON.stringify(styleCache[name]));
+}
+async function googleTiles(sat) {
+  const res = await fetch(`https://tile.googleapis.com/v1/createSession?key=${CFG.googleKey}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sat ? { mapType: 'satellite', language: 'he-IL', region: 'IL', layerTypes: ['layerRoadmap'] } : { mapType: 'roadmap', language: 'he-IL', region: 'IL' }),
+  });
+  if (!res.ok) throw new Error('google tiles ' + res.status);
+  const { session } = await res.json();
+  return `https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${session}&key=${CFG.googleKey}`;
+}
+async function buildStyle() {
+  const sat = S.basemap === 'sat';
+  if (CFG.googleKey) {
+    try {
+      const url = await googleTiles(sat);
+      return { version: 8, glyphs: `${OFM}/fonts/{fontstack}/{range}.pbf`, sources: { g: { type: 'raster', tiles: [url], tileSize: 256, maxzoom: 21, attribution: 'מפה וצילום: © Google' } }, layers: [{ id: 'g', type: 'raster', source: 'g' }] };
+    } catch (e) { console.warn('Google tiles unavailable, using free map', e); }
+  }
+  const st = await ofmStyle(sat ? 'positron' : (darkMode() ? 'dark' : 'positron'));
+  const vec = Object.keys(st.sources).find(k => st.sources[k].type === 'vector') || 'openmaptiles';
+  st.sources[vec].attribution = OFM_ATTR;
+  if (sat) {
+    const labels = st.layers.filter(l => l.type === 'symbol' && !/shield|poi|housenumber|aeroway/.test(l.id) && l.layout && l.layout['text-field']);
+    labels.forEach(l => {
+      l.layout['text-field'] = HE_LABEL;
+      l.paint = Object.assign({}, l.paint, { 'text-color': '#ffffff', 'text-halo-color': 'rgba(0,0,0,0.78)', 'text-halo-width': 1.6, 'text-halo-blur': 0.4 });
+    });
+    st.sources.sat = { type: 'raster', tiles: [ESRI_SAT], tileSize: 256, maxzoom: 19, attribution: ESRI_ATTR };
+    st.layers = [
+      { id: 'sat', type: 'raster', source: 'sat', paint: { 'raster-saturation': 0.1, 'raster-contrast': 0.05 } },
+      { id: 'sat-roads', type: 'line', source: vec, 'source-layer': 'transportation', minzoom: 12, filter: ['in', ['get', 'class'], ['literal', ['motorway', 'trunk', 'primary', 'secondary', 'tertiary']]], paint: { 'line-color': 'rgba(255,240,200,0.32)', 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.6, 17, 3] } },
+      ...labels,
+    ];
+  } else {
+    st.layers.forEach(l => { if (l.layout && l.layout['text-field']) l.layout['text-field'] = HE_LABEL; });
+    st.layers = st.layers.filter(l => !/shield|highway-name-major|poi/.test(l.id) && !(l.type === 'fill' && /building/.test(l.id)));
+    st.layers.push({
+      id: 'bld-3d', type: 'fill-extrusion', source: vec, 'source-layer': 'building', minzoom: 14.5,
+      paint: {
+        'fill-extrusion-color': darkMode() ? '#2a3322' : '#dfe3d6',
+        'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
+        'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+        'fill-extrusion-opacity': 0.82,
+      },
+    });
+  }
+  return st;
+}
+async function setTiles() {
+  const seq = S.styleSeq = (S.styleSeq || 0) + 1;
+  let style;
+  try { style = await buildStyle(); } catch (e) { console.warn('map style failed', e); toast('המפה לא נטענה. בדקו את החיבור ורעננו'); return; }
+  if (S.styleSeq !== seq || !map) return;
+  document.body.classList.toggle('sat', S.basemap === 'sat');
+  map.setStyle(style);
+}
+function initMap() {
+  try { if (maplibregl.getRTLTextPluginStatus() === 'unavailable') maplibregl.setRTLTextPlugin('https://cdn.jsdelivr.net/npm/@mapbox/mapbox-gl-rtl-text@0.3.0/dist/mapbox-gl-rtl-text.js', false).catch(() => {}); } catch (e) { console.warn(e); }
+  map = new maplibregl.Map({
+    container: 'map', center: [S.origin.lng, S.origin.lat], zoom: 14, minZoom: 6, maxZoom: 19.5, maxPitch: 70,
+    style: { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#c9cfbf' } }] },
+    attributionControl: false, dragRotate: true, touchPitch: true, cooperativeGestures: false,
+  });
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
+  map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showZoom: isDesk(), showCompass: true }), 'top-left');
+  map.on('style.load', () => { if (RT.data) drawRoute(); });
+  map.on('zoom', () => $('#map').classList.toggle('far', map.getZoom() < 11.5));
+  map.on('contextmenu', e => askBase(e.lngLat));
   map.on('click', e => {
     if (S.picking) {
       S.picking = false;
-      setOrigin({ lat: e.latlng.lat, lng: e.latlng.lng, label: 'הנקודה שבחרת', src: 'custom' });
+      setOrigin({ lat: e.lngLat.lat, lng: e.lngLat.lng, label: 'הנקודה שבחרת', src: 'custom' });
       $('[data-act="locate"]').classList.remove('on');
       toast('נקודת המוצא עודכנה');
       frameNearby();
@@ -250,113 +321,77 @@ function initMap() {
     if (!$('#sheet').hidden) closeSheet();
   });
   map.on('dragstart', () => { RT.follow = false; });
+  map.on('rotate', () => document.body.classList.toggle('rotated', Math.abs(map.getBearing()) > 1 || map.getPitch() > 1));
+  map.on('pitch', () => document.body.classList.toggle('rotated', Math.abs(map.getBearing()) > 1 || map.getPitch() > 1));
+  setTiles();
 }
-async function setTiles() {
-  const seq = S.styleSeq = (S.styleSeq || 0) + 1;
-  if (tiles) { map.removeLayer(tiles); tiles = null; }
-  if (gAttr) { map.attributionControl.removeAttribution(gAttr); gAttr = ''; }
-  if (CFG.googleKey) {
-    try {
-      const sat = S.basemap === 'sat';
-      const res = await fetch(`https://tile.googleapis.com/v1/createSession?key=${CFG.googleKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sat ? { mapType: 'satellite', language: 'he-IL', region: 'IL', layerTypes: ['layerRoadmap'] } : { mapType: 'roadmap', language: 'he-IL', region: 'IL' }),
-      });
-      if (!res.ok) throw new Error('tiles ' + res.status);
-      const { session } = await res.json();
-      if (S.styleSeq !== seq) return;
-      tiles = L.tileLayer(`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${session}&key=${CFG.googleKey}`, { maxZoom: 21, tileSize: 256 }).addTo(map);
-      document.body.classList.toggle('sat', sat);
-      const upd = async () => {
-        try {
-          const b = map.getBounds();
-          const q = `session=${session}&key=${CFG.googleKey}&zoom=${Math.round(map.getZoom())}&north=${b.getNorth()}&south=${b.getSouth()}&east=${b.getEast()}&west=${b.getWest()}`;
-          const v = await (await fetch(`https://tile.googleapis.com/tile/v1/viewport?${q}`)).json();
-          const txt = `Google${v.copyright ? ' · ' + esc(v.copyright) : ''}`;
-          if (gAttr) map.attributionControl.removeAttribution(gAttr);
-          gAttr = txt; map.attributionControl.addAttribution(gAttr);
-        } catch { /* keep previous attribution */ }
-      };
-      if (S.gAttrUpd) map.off('moveend', S.gAttrUpd);
-      S.gAttrUpd = upd; map.on('moveend', upd); upd();
-      return;
-    } catch (e) { console.warn('Google tiles unavailable, using open map', e); }
-  }
-  try {
-    const name = darkMode() ? 'dark' : 'positron';
-    const style = await (await fetch(`https://tiles.openfreemap.org/styles/${name}`)).json();
-    const label = ['coalesce', ['get', 'name:he'], ['get', 'name'], ['get', 'name_en']];
-    style.layers.forEach(l => { if (l.layout && l.layout['text-field']) l.layout['text-field'] = label; });
-    style.layers = style.layers.filter(l => !/shield|highway-name-major|poi/.test(l.id));
-    if (S.styleSeq !== seq) return;
-    tiles = L.maplibreGL({
-      style, interactive: false,
-      attribution: '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-    }).addTo(map);
-  } catch (e) {
-    console.warn('map style failed', e);
-    toast('המפה לא נטענה. בדקו את החיבור ורעננו');
-  }
-}
-function pinIcon(r) {
+function pinHtml(r) {
   const cat = CATS[r.cat], st = openState(r).s, mc = (S.meetBy.get(r.id) || []).length;
   const cls = ['pin', KIND[r.k] || '', st === 'closed' ? 'closed' : '', S.sel === r.id ? 'sel' : ''].join(' ');
-  return L.divIcon({
-    className: 'pin-wrap', iconSize: [38, 38], iconAnchor: [19, 46],
-    html: `<div class="${cls}" style="--c:${cat.c}">${icon(cat.i)}${mc ? `<span class="mcount">${mc}</span>` : ''}</div>`,
-  });
+  return `<div class="${cls}" style="--c:${cat.c}">${icon(cat.i)}${mc ? `<span class="mcount">${mc}</span>` : ''}</div>`;
 }
 function drawMarkers() {
   if (!map) return;
-  const list = filtered();
-  cluster.clearLayers(); markers.clear();
-  const layers = list.map(r => {
-    const mk = L.marker([r.lat, r.lng], { icon: pinIcon(r), title: r.n, riseOnHover: true, keyboard: true, zIndexOffset: S.sel === r.id ? 1000 : 0 });
-    mk.on('click', () => openRestaurant(r.id));
-    markers.set(r.id, mk);
-    return mk;
+  const list = filtered(), keep = new Set(list.map(r => r.id));
+  markers.forEach((mk, id) => { if (!keep.has(id)) { mk.remove(); markers.delete(id); } });
+  list.forEach(r => {
+    const html = pinHtml(r);
+    let mk = markers.get(r.id);
+    if (!mk) {
+      const el = document.createElement('button');
+      el.className = 'pin-wrap mk'; el.type = 'button'; el.setAttribute('aria-label', r.n); el.title = r.n;
+      el.addEventListener('click', ev => { ev.stopPropagation(); openRestaurant(r.id); });
+      mk = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(pos(r)).addTo(map);
+      markers.set(r.id, mk);
+    }
+    const el = mk.getElement();
+    if (el._html !== html) { el.innerHTML = html; el._html = html; }
+    el.style.zIndex = S.sel === r.id ? '5' : '';
   });
-  cluster.addLayers(layers);
+}
+function dotMarker(cls, inner, ll) {
+  const el = document.createElement('div');
+  el.className = cls; el.innerHTML = inner || '';
+  return new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(ll).addTo(map);
 }
 function drawOrigin() {
   if (!map) return;
-  if (originMarker) { map.removeLayer(originMarker); originMarker = null; }
-  if (S.origin.src === 'gps') {
-    originMarker = L.marker([S.origin.lat, S.origin.lng], { icon: L.divIcon({ className: 'pin-wrap', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), interactive: false, keyboard: false }).addTo(map);
-  } else if (S.origin.src === 'custom') {
-    originMarker = L.marker([S.origin.lat, S.origin.lng], { icon: L.divIcon({ className: 'pin-wrap', html: `<div class="base-dot">${icon('flag')}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }), title: 'נקודת המוצא שלך', keyboard: false }).addTo(map);
-  }
+  if (originMarker) { originMarker.remove(); originMarker = null; }
+  if (S.origin.src === 'gps') originMarker = dotMarker('me-dot', '', [S.origin.lng, S.origin.lat]);
+  else if (S.origin.src === 'custom') originMarker = dotMarker('base-dot', icon('flag'), [S.origin.lng, S.origin.lat]);
 }
+function boundsOf(pts) { const b = new maplibregl.LngLatBounds(pts[0], pts[0]); pts.forEach(p => b.extend(p)); return b; }
 function frameNearby(n = 8) {
   if (!map || !S.R.length) return;
-  const pts = S.R.slice().sort((a, b) => a._d - b._d).slice(0, n).map(r => [r.lat, r.lng]);
-  pts.push([S.origin.lat, S.origin.lng]);
+  const pts = S.R.slice().sort((a, b) => a._d - b._d).slice(0, n).map(pos);
+  pts.push([S.origin.lng, S.origin.lat]);
   const desk = isDesk();
   const panelH = desk ? 0 : ($('#panel').getBoundingClientRect().height || 300) + 70;
-  map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [28, desk ? 48 : 130], paddingBottomRight: [28, desk ? 48 : panelH + 16], maxZoom: 16, animate: true });
+  map.fitBounds(boundsOf(pts), { padding: { top: desk ? 48 : 130, bottom: desk ? 48 : panelH + 16, left: 28, right: 28 }, maxZoom: 16.5, duration: 700, bearing: map.getBearing(), pitch: map.getPitch() });
 }
 function flyToVisible(r) {
-  const z = Math.max(map.getZoom(), 16);
-  const p = map.project([r.lat, r.lng], z);
-  const size = map.getSize();
-  if (isDesk()) p.x += Math.min(220, size.x * 0.25);
-  else p.y += size.y * 0.27;
-  map.flyTo(map.unproject(p, z), z, { duration: 0.6 });
+  const size = map.getContainer().getBoundingClientRect();
+  map.flyTo({ center: pos(r), zoom: Math.max(map.getZoom(), 16.5), offset: isDesk() ? [-Math.min(220, size.width * 0.25), 0] : [0, -size.height * 0.27], duration: 700 });
 }
-function askBase(latlng) {
-  L.popup({ closeButton: true, autoPan: true })
-    .setLatLng(latlng)
-    .setContent(`<div style="display:grid;gap:8px;min-width:190px"><b>נקודת מוצא חדשה?</b><span style="color:var(--ink-3);font-size:13px">המרחקים וזמני ההליכה יחושבו מכאן.</span><button class="btn primary sm" data-act="set-base" data-lat="${latlng.lat}" data-lng="${latlng.lng}">${icon('flag')}קבע כאן</button></div>`)
-    .openOn(map);
+function askBase(ll) {
+  if (basePopup) basePopup.remove();
+  basePopup = new maplibregl.Popup({ closeButton: true, maxWidth: '240px' })
+    .setLngLat(ll)
+    .setHTML(`<div style="display:grid;gap:8px;min-width:190px"><b>נקודת מוצא חדשה?</b><span style="color:var(--ink-3);font-size:13px">המרחקים וזמני ההליכה יחושבו מכאן.</span><button class="btn primary sm" data-act="set-base" data-lat="${ll.lat}" data-lng="${ll.lng}">${icon('flag')}קבע כאן</button></div>`)
+    .addTo(map);
 }
 function locate({ quiet = false } = {}) {
   if (!navigator.geolocation) { if (!quiet) toast('הדפדפן לא תומך במיקום'); return; }
   const btn = $('[data-act="locate"]');
-  navigator.geolocation.getCurrentPosition(pos => {
-    setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude, label: 'המיקום שלך', src: 'gps' }, { save: false });
+  navigator.geolocation.getCurrentPosition(p => {
+    setOrigin({ lat: p.coords.latitude, lng: p.coords.longitude, label: 'המיקום שלך', src: 'gps' }, { save: false });
     btn && btn.classList.add('on');
     frameNearby();
   }, () => { if (!quiet) toast('לא הצלחנו לקבל מיקום. אפשר לבחור נקודת מוצא בלחיצה ארוכה על המפה'); }, { enableHighAccuracy: true, timeout: 9000, maximumAge: 60000 });
+}
+function toggle3d() {
+  if (map.getPitch() > 5) map.easeTo({ pitch: 0, bearing: 0, duration: 600 });
+  else map.easeTo({ pitch: 58, bearing: map.getBearing() || -20, zoom: Math.max(map.getZoom(), 16), duration: 800 });
 }
 
 /* ================= filtering ================= */
@@ -388,7 +423,8 @@ function renderTop() {
   b.setAttribute('aria-label', S.me ? `הפרופיל של ${S.me.name}` : 'התחברות');
   $('[data-act="locate"]').innerHTML = icon('current-location');
   const bb = $('#baseBtn');
-  if (bb) { bb.hidden = !gOn(); bb.innerHTML = icon(S.basemap === 'sat' ? 'map' : 'satellite'); bb.setAttribute('aria-label', S.basemap === 'sat' ? 'תצוגת מפה' : 'תצוגת לווין'); bb.title = bb.getAttribute('aria-label'); }
+  if (bb) { bb.hidden = false; bb.innerHTML = icon(S.basemap === 'sat' ? 'map' : 'satellite'); bb.setAttribute('aria-label', S.basemap === 'sat' ? 'תצוגת מפה' : 'תצוגת לווין'); bb.title = bb.getAttribute('aria-label'); }
+  const b3 = $('#btn3d'); if (b3 && !b3.innerHTML) b3.innerHTML = '<span class="t3d">3D</span>';
   $('#fab .fab-ic').innerHTML = icon('bolt');
 }
 function renderChips() {
@@ -428,10 +464,17 @@ function distHtml(r) {
   const w = walkMin(r._d);
   return w <= 35 ? `<b class="num">${w}</b>דק׳ הליכה` : `<b class="num">${r._d < 10000 ? (r._d / 1000).toFixed(1) : Math.round(r._d / 1000)}</b>ק״מ`;
 }
+/* Representative dish photos (Pexels). Meat places never get a photo that shows dairy. */
+const MEAT_SAFE = { sandwich: [1], cafe: [1], pizza: [] };
+const catPhoto = r => {
+  const opts = r.k === 'בשרי' && MEAT_SAFE[r.cat] ? MEAT_SAFE[r.cat] : [1, 2];
+  return opts.length ? `img/cat/${r.cat}-${opts[r.id % opts.length]}.jpg` : '';
+};
 function thumbHtml(r, g) {
   const ph = g && g.photos && g.photos[0];
-  if (!ph) return catAv(r);
-  return `<span class="thumb" style="--c:${CATS[r.cat].c}"><img src="${gPhoto(ph, 240)}" alt="" loading="lazy" onerror="this.remove()"><span class="thumb-cat">${icon(CATS[r.cat].i)}</span></span>`;
+  const src = ph ? gPhoto(ph, 240) : catPhoto(r);
+  if (!src) return catAv(r);
+  return `<span class="thumb" style="--c:${CATS[r.cat].c}"><img src="${src}" alt="" loading="lazy" onerror="this.remove()"><span class="thumb-cat">${icon(CATS[r.cat].i)}</span></span>`;
 }
 function ritem(r, i = 99) {
   const g = i < (CFG.googleListCount || 12) ? gGet(r) : gPeek(r);
@@ -453,7 +496,7 @@ function viewList() {
   }
   const nudge = !S.me ? `<div class="card tint" style="margin-bottom:6px"><div class="row"><div class="grow"><b>אוכלים ביחד?</b><div class="note">הצטרפו כדי לקבוע מפגשי צהריים ולראות מה החבר׳ה ממליצים.</div></div><button class="btn sm primary" data-act="auth">הצטרפות</button></div></div>` : '';
   return head + nudge + `<ul class="rlist">${list.map((r, i) => ritem(r, i)).join('')}</ul>
-    <p class="note" style="text-align:center;margin-top:16px">הרשימה לפי רשימת המסעדות שמכבדות גודיס, מעודכנת ל-${LIST_DATE}. שעות הפתיחה לימים א׳–ה׳.${gOn() ? ' תמונות, דירוגים ומחירים: Google.' : ''}</p>`;
+    <p class="note" style="text-align:center;margin-top:16px">הרשימה לפי רשימת המסעדות שמכבדות גודיס, מעודכנת ל-${LIST_DATE}. שעות הפתיחה לימים א׳–ה׳.${gOn() ? ' תמונות, דירוגים ומחירים: Google.' : ' תמונות האוכל להמחשה, מ-Pexels.'}</p>`;
 }
 
 /* ----- restaurant sheet ----- */
@@ -485,7 +528,8 @@ function renderSheet() {
   const hero = photos
     ? `<div class="hero photos"><div class="photos-strip" id="heroStrip">${photos.map((p, i) => `<button class="hero-ph" data-act="gallery" data-id="${r.id}" data-i="${i}" aria-label="תמונה ${i + 1} מתוך ${photos.length}"><img src="${gPhoto(p, 900)}" alt="" ${i ? 'loading="lazy"' : ''}></button>`).join('')}</div>
         <span class="ph-count num">${icon('photo')}${photos.length}</span>${credit(photos[0], 'photo-credit')}`
-    : `<div class="hero" style="--c:${c.c}"><div class="hero-art">${art}</div><div class="hero-big">${icon(c.i)}</div>${gOn() && r.pid && !g ? '<span class="ph-loading">טוען תמונות מגוגל…</span>' : ''}`;
+    : !catPhoto(r) ? `<div class="hero" style="--c:${c.c}"><div class="hero-art">${art}</div><div class="hero-big">${icon(c.i)}</div>`
+    : `<div class="hero cat-photo" style="--c:${c.c}"><div class="hero-art">${art}</div><img class="hero-img" src="${catPhoto(r)}" alt="" onerror="this.remove()"><div class="hero-big">${icon(c.i)}</div>${gOn() && r.pid && !g ? '<span class="ph-loading">טוען תמונות מגוגל…</span>' : '<span class="ph-note">תמונה להמחשה</span>'}`;
   const tr = teamRate(r.id);
   const myTip = S.me && tr ? tr.tips.find(t => t.u === S.me.id) : null;
   const meets = (S.meetBy.get(r.id) || []);
@@ -630,7 +674,6 @@ function galleryStep(dir) {
 /* ================= in-app route (OpenStreetMap routing; voice navigation via Google/Waze) ================= */
 const RT = { layers: [], watch: null, data: null, rid: null, mode: 'foot', live: false, follow: true, lastReroute: 0, from: null, gps: false, arrived: false, showSteps: false, loading: false, err: '', progress: 0, meMk: null, wake: null };
 const ROUTER = CFG.routing || 'https://routing.openstreetmap.de';
-const meDotIcon = () => L.divIcon({ className: 'pin-wrap', html: '<div class="me-dot rt"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
 const isRouting = () => document.body.classList.contains('routing');
 function getPos(timeout = 7000) {
   return new Promise(res => {
@@ -676,24 +719,29 @@ async function computeRoute() {
   drawRoute(); renderRoute();
   if (RT.data && !RT.live) fitRoute();
 }
-function clearRouteLayers() { RT.layers.forEach(l => map.removeLayer(l)); RT.layers = []; }
+function clearRouteLayers() {
+  if (!map) return;
+  ['route-line', 'route-casing'].forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+  if (map.getSource('route')) map.removeSource('route');
+  RT.layers.forEach(m => m.remove()); RT.layers = [];
+}
 function drawRoute() {
   clearRouteLayers();
   if (!RT.data) return;
   const foot = RT.mode === 'foot';
-  RT.layers.push(L.polyline(RT.data.coords, { color: '#ffffff', weight: foot ? 10 : 11, opacity: 0.95, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(map));
-  RT.layers.push(L.polyline(RT.data.coords, { color: '#1d6ff2', weight: foot ? 6 : 7, opacity: 1, dashArray: foot ? '0.1 11' : null, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(map));
-  if (RT.gps) {
-    if (!RT.meMk) RT.meMk = L.marker([RT.from.lat, RT.from.lng], { icon: meDotIcon(), interactive: false, keyboard: false, zIndexOffset: 2000 }).addTo(map);
-  } else {
-    RT.layers.push(L.marker([RT.from.lat, RT.from.lng], { icon: L.divIcon({ className: 'pin-wrap', html: `<div class="base-dot">${icon('flag')}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }), interactive: false, keyboard: false }).addTo(map));
-  }
+  try {
+    map.addSource('route', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: RT.data.coords.map(([la, ln]) => [ln, la]) } } });
+    map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': foot ? 10 : 11, 'line-opacity': 0.95 } });
+    map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: Object.assign({ 'line-color': '#1d6ff2', 'line-width': foot ? 6 : 7 }, foot ? { 'line-dasharray': [0, 1.9] } : {}) });
+  } catch (e) { map.once('style.load', drawRoute); return; }
+  if (RT.gps) { if (!RT.meMk) RT.meMk = dotMarker('me-dot rt', '', [RT.from.lng, RT.from.lat]); }
+  else RT.layers.push(dotMarker('base-dot', icon('flag'), [RT.from.lng, RT.from.lat]));
 }
 function fitRoute() {
   if (!RT.data) return;
   const desk = isDesk(), card = $('#routeCard').getBoundingClientRect().height || 260;
-  map.fitBounds(L.latLngBounds(RT.data.coords), {
-    paddingTopLeft: [36, desk ? 48 : 90], paddingBottomRight: [desk ? 440 : 36, desk ? 48 : card + 24], maxZoom: 17, animate: true,
+  map.fitBounds(boundsOf(RT.data.coords.map(([la, ln]) => [ln, la])), {
+    padding: { top: desk ? 48 : 90, bottom: desk ? 48 : card + 24, left: 36, right: desk ? 440 : 36 }, maxZoom: 17, duration: 700, bearing: 0, pitch: 0,
   });
 }
 const fmtDur = s => { const m = Math.max(1, Math.round(s / 60)); return m < 60 ? `${m} דק׳` : `${Math.floor(m / 60)}:${pad(m % 60)} ש׳`; };
@@ -759,8 +807,10 @@ function stopLive() {
 function onRoutePos(p) {
   const me = { lat: p.coords.latitude, lng: p.coords.longitude }, r = S.RM.get(RT.rid);
   if (!r) return;
-  if (!RT.meMk) RT.meMk = L.marker([me.lat, me.lng], { icon: meDotIcon(), interactive: false, keyboard: false, zIndexOffset: 2000 }).addTo(map);
-  else RT.meMk.setLatLng([me.lat, me.lng]);
+  if (!RT.meMk) RT.meMk = dotMarker('me-dot rt', '', [me.lng, me.lat]);
+  else RT.meMk.setLngLat([me.lng, me.lat]);
+  const hd = p.coords.heading, sp = p.coords.speed;
+  if (typeof hd === 'number' && !isNaN(hd) && sp > 0.6) RT.heading = hd;
   if (!RT.gps) { RT.gps = true; RT.from = me; computeRoute(); return; }
   if (!RT.data) return;
   let best = 0, bd = Infinity;
@@ -771,17 +821,16 @@ function onRoutePos(p) {
   } else if (bd > 60 && Date.now() - RT.lastReroute > 20000) {
     RT.lastReroute = Date.now(); RT.from = me; RT.progress = 0; computeRoute(); return;
   }
-  if (RT.follow) panToMe([me.lat, me.lng]);
+  if (RT.follow) panToMe([me.lng, me.lat]);
   renderRoute();
 }
 function panToMe(ll) {
-  const z = Math.max(map.getZoom(), 17), pt = map.project(ll, z);
-  if (isDesk()) pt.x += 200; else pt.y += ($('#routeCard').getBoundingClientRect().height || 300) / 2;
-  map.setView(map.unproject(pt, z), z, { animate: true });
+  const card = $('#routeCard').getBoundingClientRect().height || 300;
+  map.easeTo({ center: ll, zoom: Math.max(map.getZoom(), 17.3), pitch: RT.live ? 50 : map.getPitch(), bearing: RT.live && RT.heading != null ? RT.heading : map.getBearing(), offset: isDesk() ? [-200, 0] : [0, -card / 2 + 60], duration: 600 });
 }
 function endRoute() {
   stopLive(); if (map) clearRouteLayers();
-  if (RT.meMk) { map.removeLayer(RT.meMk); RT.meMk = null; }
+  if (RT.meMk) { RT.meMk.remove(); RT.meMk = null; }
   document.body.classList.remove('routing');
   const el = $('#routeCard'); if (el) el.hidden = true;
 }

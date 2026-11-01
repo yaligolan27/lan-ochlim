@@ -16,7 +16,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=Karantina:wght@700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -46,7 +45,8 @@
   </aside>
 
   <div class="map-tools" id="mapTools">
-    <button class="round-btn" data-act="basemap" id="baseBtn" hidden aria-label="תצוגת לווין"></button>
+    <button class="round-btn" data-act="toggle3d" id="btn3d" aria-label="תצוגה בתלת-ממד" title="תלת-ממד"></button>
+    <button class="round-btn" data-act="basemap" id="baseBtn" aria-label="תצוגת מפה"></button>
     <button class="round-btn" data-act="locate" aria-label="המיקום שלי" title="המיקום שלי"></button>
   </div>
   <button class="fab" id="fab" data-act="now">
@@ -61,10 +61,7 @@
 </div>
 <script src="config.js"></script>
 <script src="icons.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
 <script src="app1.js"></script>
 <script src="app2.js"></script>
 </body>
