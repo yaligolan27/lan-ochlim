@@ -43,6 +43,7 @@ const S = {
   data: null, me: null, people: new Map(),
   agg: new Map(), meetBy: new Map(),
   sel: null, after: null, google: {}, openGroup: null,
+  adminOpen: false, admSec: 'users', adm: null,
 };
 
 /* ================= time ================= */
@@ -126,6 +127,10 @@ const ERR = {
   TOO_MANY: 'הגעתם למגבלה היומית. נסו שוב מחר', SLOT_PASSED: 'השעה הזאת כבר קרובה מדי. בחרו שעה מאוחרת יותר',
   NOT_HOST: 'רק מי שקבע את המפגש יכול לבטל אותו', NETWORK: 'אין חיבור לשרת. בדקו את האינטרנט ונסו שוב',
   NEED_LOGIN: 'צריך להתחבר קודם', BAD_RESTAURANT: 'בחרו מסעדה',
+  INVITE_EXPIRED: 'תוקף קוד ההצטרפות פג. בקשו קוד חדש', DISABLED: 'החשבון חסום. פנו למנהלי האפליקציה',
+  NOT_ADMIN: 'הפעולה הזאת רק למנהלים', BAD_CODE: 'הקוד לא נכון או שכבר נוצל', SELF: 'את הפעולה הזאת אי אפשר לעשות על עצמכם',
+  BAD_FEEDBACK: 'כתבו לפחות כמה מילים', BAD_PIN_CONFIRM: 'הקוד האישי לא נכון', BAD_MAX: 'מספר האנשים צריך להיות 1 ומעלה',
+  LAST_ADMIN: 'אתם המנהלים היחידים. הפכו מישהו אחר למנהל לפני שמוחקים את החשבון',
 };
 const errMsg = e => ERR[e && e.message] || ERR.NETWORK;
 async function rpc(fn, args = {}) {
@@ -218,7 +223,9 @@ function downloadIcs(m) {
 let map, originMarker = null, basePopup = null;
 const markers = new Map();
 const OFM = 'https://tiles.openfreemap.org';
-const ESRI_SAT = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const ESRI_SAT = CFG.esriKey
+  ? `https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?token=${encodeURIComponent(CFG.esriKey)}`
+  : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const ESRI_ATTR = 'צילום לווין: Esri, Maxar, Earthstar Geographics';
 const OFM_ATTR = '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
 const HE_LABEL = ['coalesce', ['get', 'name:he'], ['get', 'name'], ['get', 'name_en']];
@@ -451,7 +458,7 @@ function renderTabs() {
 }
 function renderView() {
   const v = $('#view');
-  const html = S.tab === 'map' ? viewList() : S.tab === 'meet' ? viewMeet() : S.tab === 'crew' ? viewCrew() : viewMe();
+  const html = S.tab === 'map' ? viewList() : S.tab === 'meet' ? viewMeet() : S.tab === 'crew' ? viewCrew() : (S.adminOpen && S.me && S.me.role === 'admin' ? viewAdmin() : viewMe());
   v.innerHTML = html;
 }
 function catAv(r, cls = '') { const c = CATS[r.cat]; return `<span class="cat-av ${cls}" style="--c:${c.c}" aria-hidden="true">${icon(c.i)}</span>`; }
@@ -943,7 +950,8 @@ function viewMe() {
   const myRates = (S.data.tips || []).filter(t => t.u === me.id).length;
   const favs = S.R.filter(r => favSet().has(r.id)).sort((a, b) => a._d - b._d);
   const theme = store.get('theme', 'auto');
-  return `<div class="profile"><span class="av lg" style="--c:${esc(me.color)}">${esc(me.avatar)}</span>
+  return `${me.must_change_pin ? `<div class="notice">${icon('alert-triangle')}<div><b>אתם עם קוד זמני</b><small>בחרו קוד אישי משלכם</small></div><button class="btn sm primary" data-act="force-pin-open">בחירה</button></div>` : ''}
+    <div class="profile"><span class="av lg" style="--c:${esc(me.color)}">${esc(me.avatar)}</span>
       <div><h2>${esc(me.name)}</h2><div class="gsub"><span dir="ltr">@${esc(me.username)}</span> · ${esc(me.org)}${me.team ? ` · ${esc(me.team)}` : ''}</div></div>
       <button class="icon-btn" data-act="edit-profile" aria-label="עריכת פרופיל">${icon('pencil')}</button></div>
     <div class="stats"><div class="stat"><b class="num">${visited.size}</b><span>מסעדות שגילית</span></div><div class="stat"><b class="num">${myMeets}</b><span>מפגשים קרובים</span></div><div class="stat"><b class="num">${myRates}</b><span>דירוגים שנתת</span></div></div>
@@ -954,13 +962,17 @@ function viewMe() {
       <p class="note" style="margin:10px 0 0">כל פעם שאוכלים במקום חדש, מסמנים „אכלתי כאן” בכרטיס המסעדה וממלאים חותמת.</p>
     </div>
     ${favs.length ? `<div class="section-title">המועדפים שלי</div><ul class="rlist">${favs.map(ritem).join('')}</ul>` : ''}
+    ${me.role === 'admin' ? `<div class="setting admin-row"><div><b>${icon('shield-check')}ניהול האפליקציה</b><small>משתמשים, קודי הצטרפות, משוב ותוכן</small></div><button class="btn sm primary" data-act="admin-open">פתיחה</button></div>` : ''}
     <div class="section-title">הגדרות</div>
     <div class="setting"><div><b>נקודת מוצא למרחקים</b><small>${esc(originLabel())}</small></div><button class="btn sm" data-act="origin">שינוי</button></div>
     <div class="setting"><div><b>מראה</b><small>בהיר, כהה או לפי המכשיר</small></div>
       <div class="seg" style="width:200px">${[['auto', 'אוטו׳'], ['light', 'בהיר'], ['dark', 'כהה']].map(([k, l]) => `<button data-act="theme" data-v="${k}" aria-pressed="${theme === k}">${l}</button>`).join('')}</div></div>
     <div class="setting"><div><b>קוד אישי</b><small>4 עד 8 ספרות</small></div><button class="btn sm" data-act="pin">החלפה</button></div>
-    <div class="setting" style="border:0"><div><b>יציאה מהחשבון</b><small>במכשיר הזה</small></div><button class="btn sm danger" data-act="logout">${icon('logout')}יציאה</button></div>
-    <p class="note" style="margin-top:14px">רשימת המסעדות מעודכנת ל-${LIST_DATE}. מצאתם טעות או מסעדה חסרה? ספרו ליהלי מצוות ה-CTO.</p>`;
+    <div class="setting"><div><b>יש לי הערה</b><small>טעות, מסעדה חסרה או רעיון</small></div><button class="btn sm" data-act="feedback">${icon('message-circle')}כתיבה</button></div>
+    <div class="setting"><div><b>פרטיות ואבטחה</b><small>מה נשמר, מי רואה וכמה זמן</small></div><button class="btn sm" data-act="privacy">${icon('shield-lock')}פרטים</button></div>
+    <div class="setting"><div><b>יציאה מהחשבון</b><small>במכשיר הזה</small></div><button class="btn sm" data-act="logout">${icon('logout')}יציאה</button></div>
+    <div class="setting" style="border:0"><div><b>מחיקת החשבון</b><small>כל הנתונים שלכם נמחקים מיד</small></div><button class="btn sm danger" data-act="del-account">${icon('trash')}מחיקה</button></div>
+    <p class="note" style="margin-top:14px">רשימת המסעדות מעודכנת ל-${LIST_DATE}. מצאתם טעות או מסעדה חסרה? <button class="linkish" data-act="feedback">ספרו לנו</button>${me.role === 'admin' ? '' : ` · <button class="linkish" style="color:var(--ink-3);font-weight:500" data-act="claim">קוד ניהול</button>`}</p>`;
 }
 function welcome(where) {
   const lines = {

@@ -3,7 +3,7 @@
 /* ================= modals ================= */
 function openModal(html, { onClose } = {}) {
   const m = $('#modal'), c = $('#modalCard');
-  c.innerHTML = html; m.hidden = false; m._onClose = onClose;
+  c.innerHTML = html; c.scrollTop = 0; m.hidden = false; m._onClose = onClose;
   const first = c.querySelector('input, textarea, select');
   if (first && isDesk()) setTimeout(() => first.focus(), 50);
 }
@@ -19,17 +19,18 @@ function openAuth(mode = 'register') {
     ${mode === 'login' ? `<form class="form" id="loginForm">
         <label class="field"><span>שם משתמש</span><input class="input ltr" id="lu" name="u" autocomplete="username" autocapitalize="none" required></label>
         <label class="field"><span>קוד אישי</span><input class="input ltr" id="lp" name="p" type="password" inputmode="numeric" autocomplete="current-password" pattern="[0-9]{4,8}" required></label>
-        <div class="err" id="authErr"></div><button class="btn primary block" type="submit">כניסה</button></form>`
+        <div class="err" id="authErr"></div><button class="btn primary block" type="submit">כניסה</button>
+        <button type="button" class="linkish" style="justify-self:center" data-act="forgot">שכחתם את הקוד?</button></form>`
       : `<form class="form" id="regForm">
         <label class="field"><span>קוד הצטרפות</span><input class="input ltr" id="ri" name="i" value="${esc(invite)}" autocapitalize="characters" required><small>קיבלתם אותו מהארגון. בלי קוד אי אפשר להירשם.</small></label>
-        <label class="field"><span>שם להצגה</span><input class="input" id="rn" name="n" maxlength="40" autocomplete="name" placeholder="איך החבר׳ה מכירים אתכם" required></label>
+        <label class="field"><span>שם להצגה</span><input class="input" id="rn" name="n" maxlength="40" autocomplete="name" placeholder="שם פרטי או כינוי" required><small>מה שהחבר׳ה יראו. לא צריך שם מלא.</small></label>
         <label class="field"><span>שם משתמש</span><input class="input ltr" id="ru" name="u" maxlength="24" autocomplete="username" autocapitalize="none" placeholder="noa.levi" required><small>לכניסה בפעם הבאה. אותיות, ספרות, נקודה או קו תחתון.</small></label>
         <label class="field"><span>קוד אישי</span><input class="input ltr" id="rp" name="p" type="password" inputmode="numeric" autocomplete="new-password" pattern="[0-9]{4,8}" maxlength="8" required><small>4 עד 8 ספרות. לא קוד שמשמש אתכם במקום אחר.</small></label>
         <label class="field"><span>צוות או מדור <span class="note">(לא חובה)</span></span><input class="input" id="rt" name="t" maxlength="40" placeholder="למשל: CTO"></label>
         <div class="field"><span>אווטאר</span><div class="opts" id="avOpts">${AVATARS.map(a => `<button type="button" class="opt emoji-opt" data-act="pick" data-group="av" data-v="${a}" aria-pressed="${a === av}">${a}</button>`).join('')}</div></div>
         <div class="field"><span>צבע</span><div class="opts" id="colOpts">${COLORS.map(c => `<button type="button" class="color-opt" style="background:${c}" data-act="pick" data-group="col" data-v="${c}" aria-pressed="${c === col}" aria-label="צבע"></button>`).join('')}</div></div>
         <div class="err" id="authErr"></div><button class="btn primary block" type="submit">הרשמה</button>
-        <p class="note" style="margin:0">שומרים רק שם, שם משתמש, צוות ואווטאר. בלי מספר אישי, דרגה או טלפון.</p></form>`}
+        <p class="note" style="margin:0">שומרים רק שם, שם משתמש, צוות ואווטאר. בלי מספר אישי, דרגה או טלפון. <button type="button" class="linkish" data-act="privacy">מה נשמר ומי רואה</button></p></form>`}
   `);
 }
 const picked = (group, root = $('#modalCard')) => { const b = root.querySelector(`[data-group="${group}"][aria-pressed="true"]`); return b ? b.dataset.v : null; };
@@ -262,7 +263,7 @@ document.addEventListener('click', async e => {
     case 'edit-profile': openEditProfile(); break;
     case 'pin': openPin(); break;
     case 'theme': store.set('theme', el.dataset.v); applyTheme(); renderView(); break;
-    case 'logout': try { await rpc('gd_logout', { p_token: S.token }); } catch { /* ignore */ } dropSession(); S.tab = 'map'; renderAll(); toast('יצאת מהחשבון'); break;
+    case 'logout': try { await rpc('gd_logout', { p_token: S.token }); } catch { /* ignore */ } dropSession(); S.adminOpen = false; S.adm = null; S.tab = 'map'; renderAll(); toast('יצאת מהחשבון'); break;
     default: break;
   }
 });
@@ -295,7 +296,9 @@ document.addEventListener('submit', async e => {
   busy(true);
   try {
     if (f.id === 'loginForm') {
-      await afterLogin(await rpc('gd_login', { p_username: $('#lu').value, p_pin: $('#lp').value }));
+      const pin = $('#lp').value, res = await rpc('gd_login', { p_username: $('#lu').value, p_pin: pin });
+      await afterLogin(res);
+      if (res.user && res.user.must_change_pin) openForcePin(pin);
     } else if (f.id === 'regForm') {
       store.set('invite', $('#ri').value.trim());
       await afterLogin(await rpc('gd_register', { p_invite: $('#ri').value, p_username: $('#ru').value, p_name: $('#rn').value, p_pin: $('#rp').value, p_avatar: picked('av'), p_color: picked('col'), p_team: $('#rt').value }));
