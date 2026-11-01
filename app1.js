@@ -246,8 +246,10 @@ function initMap() {
       frameNearby();
       return;
     }
+    if (isRouting()) return;
     if (!$('#sheet').hidden) closeSheet();
   });
+  map.on('dragstart', () => { RT.follow = false; });
 }
 async function setTiles() {
   const seq = S.styleSeq = (S.styleSeq || 0) + 1;
@@ -255,13 +257,16 @@ async function setTiles() {
   if (gAttr) { map.attributionControl.removeAttribution(gAttr); gAttr = ''; }
   if (CFG.googleKey) {
     try {
+      const sat = S.basemap === 'sat';
       const res = await fetch(`https://tile.googleapis.com/v1/createSession?key=${CFG.googleKey}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mapType: 'roadmap', language: 'he-IL', region: 'IL' }),
+        body: JSON.stringify(sat ? { mapType: 'satellite', language: 'he-IL', region: 'IL', layerTypes: ['layerRoadmap'] } : { mapType: 'roadmap', language: 'he-IL', region: 'IL' }),
       });
       if (!res.ok) throw new Error('tiles ' + res.status);
       const { session } = await res.json();
+      if (S.styleSeq !== seq) return;
       tiles = L.tileLayer(`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${session}&key=${CFG.googleKey}`, { maxZoom: 21, tileSize: 256 }).addTo(map);
+      document.body.classList.toggle('sat', sat);
       const upd = async () => {
         try {
           const b = map.getBounds();
@@ -272,7 +277,8 @@ async function setTiles() {
           gAttr = txt; map.attributionControl.addAttribution(gAttr);
         } catch { /* keep previous attribution */ }
       };
-      map.on('moveend', upd); upd();
+      if (S.gAttrUpd) map.off('moveend', S.gAttrUpd);
+      S.gAttrUpd = upd; map.on('moveend', upd); upd();
       return;
     } catch (e) { console.warn('Google tiles unavailable, using open map', e); }
   }
@@ -381,6 +387,8 @@ function renderTop() {
   b.innerHTML = S.me ? `<span class="av" style="--c:${esc(S.me.color)}">${esc(S.me.avatar)}</span>` : icon('user');
   b.setAttribute('aria-label', S.me ? `הפרופיל של ${S.me.name}` : 'התחברות');
   $('[data-act="locate"]').innerHTML = icon('current-location');
+  const bb = $('#baseBtn');
+  if (bb) { bb.hidden = !gOn(); bb.innerHTML = icon(S.basemap === 'sat' ? 'map' : 'satellite'); bb.setAttribute('aria-label', S.basemap === 'sat' ? 'תצוגת מפה' : 'תצוגת לווין'); bb.title = bb.getAttribute('aria-label'); }
   $('#fab .fab-ic').innerHTML = icon('bolt');
 }
 function renderChips() {
@@ -420,10 +428,18 @@ function distHtml(r) {
   const w = walkMin(r._d);
   return w <= 35 ? `<b class="num">${w}</b>דק׳ הליכה` : `<b class="num">${r._d < 10000 ? (r._d / 1000).toFixed(1) : Math.round(r._d / 1000)}</b>ק״מ`;
 }
-function ritem(r) {
+function thumbHtml(r, g) {
+  const ph = g && g.photos && g.photos[0];
+  if (!ph) return catAv(r);
+  return `<span class="thumb" style="--c:${CATS[r.cat].c}"><img src="${gPhoto(ph, 240)}" alt="" loading="lazy" onerror="this.remove()"><span class="thumb-cat">${icon(CATS[r.cat].i)}</span></span>`;
+}
+function ritem(r, i = 99) {
+  const g = i < (CFG.googleListCount || 12) ? gGet(r) : gPeek(r);
+  const gr = g && g.rating ? `<span class="g-rate" title="דירוג בגוגל">${icon('star-f')}<b class="num">${g.rating.toFixed(1)}</b><small class="num">(${fmtCount(g.userRatingCount)})</small></span>` : '';
+  const price = g ? priceText(g) : '';
   return `<li class="ritem" data-act="open-r" data-id="${r.id}" tabindex="0" role="button" aria-label="${esc(r.n)}">
-    ${catAv(r)}
-    <div><div class="rname">${esc(r.n)}</div><div class="rmeta">${CATS[r.cat].l} · ${esc(r.a ? r.a + ', ' : '')}${esc(r.c)}</div><div class="rtags">${tagsHtml(r)}</div></div>
+    ${thumbHtml(r, g)}
+    <div><div class="rname-row"><span class="rname">${esc(r.n)}</span>${gr}</div><div class="rmeta">${CATS[r.cat].l}${price ? ` · <span class="price num">${price}</span>` : ''} · ${esc(r.a ? r.a + ', ' : '')}${esc(r.c)}</div><div class="rtags">${tagsHtml(r)}</div></div>
     <div class="rdist">${distHtml(r)}</div></li>`;
 }
 function viewList() {
@@ -436,14 +452,15 @@ function viewList() {
     return head + `<div class="empty">${icon('search')}<h3>אין תוצאות לסינון הזה</h3><p>נסו להסיר חלק מהמסננים או לחפש שם אחר.</p><button class="btn" data-act="clear">ניקוי הסינון</button></div>`;
   }
   const nudge = !S.me ? `<div class="card tint" style="margin-bottom:6px"><div class="row"><div class="grow"><b>אוכלים ביחד?</b><div class="note">הצטרפו כדי לקבוע מפגשי צהריים ולראות מה החבר׳ה ממליצים.</div></div><button class="btn sm primary" data-act="auth">הצטרפות</button></div></div>` : '';
-  return head + nudge + `<ul class="rlist">${list.map(ritem).join('')}</ul>
-    <p class="note" style="text-align:center;margin-top:16px">הרשימה לפי רשימת המסעדות שמכבדות גודיס, מעודכנת ל-${LIST_DATE}. שעות הפתיחה לימים א׳–ה׳.</p>`;
+  return head + nudge + `<ul class="rlist">${list.map((r, i) => ritem(r, i)).join('')}</ul>
+    <p class="note" style="text-align:center;margin-top:16px">הרשימה לפי רשימת המסעדות שמכבדות גודיס, מעודכנת ל-${LIST_DATE}. שעות הפתיחה לימים א׳–ה׳.${gOn() ? ' תמונות, דירוגים ומחירים: Google.' : ''}</p>`;
 }
 
 /* ----- restaurant sheet ----- */
 function openRestaurant(id, { fly = true } = {}) {
   const r = S.RM.get(+id);
   if (!r) return;
+  if (isRouting()) endRoute();
   S.sel = r.id;
   const sh = $('#sheet');
   renderSheet();
@@ -452,7 +469,7 @@ function openRestaurant(id, { fly = true } = {}) {
   drawMarkers();
   if (fly && map) flyToVisible(r);
   history.replaceState(null, '', `#r-${r.id}`);
-  if (CFG.googleKey && r.pid) loadGoogle(r);
+  gGet(r);
 }
 function closeSheet() {
   $('#sheet').hidden = true; document.body.classList.remove('sheet-open');
@@ -462,12 +479,13 @@ function closeSheet() {
 function renderSheet() {
   const r = S.RM.get(S.sel);
   if (!r) return;
-  const c = CATS[r.cat], st = openState(r), fav = favSet().has(r.id), g = r.pid ? S.google[r.pid] : null;
-  const photos = g && g.photos && g.photos.length ? g.photos.slice(0, 6) : null;
+  const c = CATS[r.cat], st = openState(r), fav = favSet().has(r.id), g = gPeek(r);
+  const photos = g && g.photos && g.photos.length ? g.photos.slice(0, 10) : null;
   const art = Array.from({ length: 24 }, () => icon(c.i)).join('');
   const hero = photos
-    ? `<div class="hero photos"><div class="photos-strip">${photos.map(p => `<img src="${gPhoto(p)}" alt="" loading="lazy">`).join('')}</div>${photos[0].authorAttributions && photos[0].authorAttributions[0] ? `<a class="photo-credit" href="${esc(photos[0].authorAttributions[0].uri)}" target="_blank" rel="noopener">צילום: ${esc(photos[0].authorAttributions[0].displayName)} · Google</a>` : ''}`
-    : `<div class="hero" style="--c:${c.c}"><div class="hero-art">${art}</div><div class="hero-big">${icon(c.i)}</div>`;
+    ? `<div class="hero photos"><div class="photos-strip" id="heroStrip">${photos.map((p, i) => `<button class="hero-ph" data-act="gallery" data-id="${r.id}" data-i="${i}" aria-label="תמונה ${i + 1} מתוך ${photos.length}"><img src="${gPhoto(p, 900)}" alt="" ${i ? 'loading="lazy"' : ''}></button>`).join('')}</div>
+        <span class="ph-count num">${icon('photo')}${photos.length}</span>${credit(photos[0], 'photo-credit')}`
+    : `<div class="hero" style="--c:${c.c}"><div class="hero-art">${art}</div><div class="hero-big">${icon(c.i)}</div>${gOn() && r.pid && !g ? '<span class="ph-loading">טוען תמונות מגוגל…</span>' : ''}`;
   const tr = teamRate(r.id);
   const myTip = S.me && tr ? tr.tips.find(t => t.u === S.me.id) : null;
   const meets = (S.meetBy.get(r.id) || []);
@@ -478,16 +496,24 @@ function renderSheet() {
 
   let googleBlock;
   if (g && !g.error) {
-    const stars = g.rating ? starsHtml(g.rating) : '';
-    googleBlock = `<div class="card"><h3>${icon('brand-google-maps')}בגוגל</h3>
-      ${g.rating ? `<div class="grating"><b class="num">${g.rating.toFixed(1)}</b>${stars}<span class="note">${(g.userRatingCount || 0).toLocaleString('he-IL')} ביקורות</span></div>` : ''}
-      ${g.editorialSummary && g.editorialSummary.text ? `<p style="margin:8px 0 0;font-size:14px">${esc(g.editorialSummary.text)}</p>` : ''}
-      <div class="row" style="margin-top:10px">
+    const mapsUrl = esc(g.googleMapsUri || gPlaceUrl(r));
+    const hours = g.regularOpeningHours && g.regularOpeningHours.weekdayDescriptions;
+    const openNow = g.currentOpeningHours && typeof g.currentOpeningHours.openNow === 'boolean' ? g.currentOpeningHours.openNow : null;
+    googleBlock = `<div class="card gbox"><h3>${icon('brand-google')}מידע מגוגל</h3>
+      <div class="gstats">
+        ${g.rating ? `<div><b class="num">${g.rating.toFixed(1)}</b>${starsHtml(g.rating)}<small class="num">${fmtCount(g.userRatingCount)} ביקורות</small></div>` : ''}
+        ${priceText(g) ? `<div><b class="num" dir="ltr">${priceText(g)}</b><small>${g.priceRange ? 'לאדם' : 'רמת מחיר'}</small></div>` : ''}
+        ${openNow !== null ? `<div><b class="${openNow ? 'ok' : 'bad'}">${openNow ? 'פתוח' : 'סגור'}</b><small>עכשיו, לפי גוגל</small></div>` : ''}
+      </div>
+      ${g.editorialSummary && g.editorialSummary.text ? `<p class="gsum">${esc(g.editorialSummary.text)}</p>` : ''}
+      ${hours ? `<details class="ghours"><summary>${icon('clock')}שעות פתיחה בגוגל</summary><ul>${hours.map(h => `<li>${esc(h)}</li>`).join('')}</ul></details>` : ''}
+      <div class="row" style="margin-top:12px">
         ${g.websiteUri ? `<a class="btn sm" href="${esc(g.websiteUri)}" target="_blank" rel="noopener">${icon('external-link')}אתר ותפריט</a>` : ''}
-        ${g.reservable ? `<a class="btn sm accent" href="${esc(g.googleMapsUri || gPlaceUrl(r))}" target="_blank" rel="noopener">${icon('calendar-plus')}הזמנת מקום</a>` : ''}
-        <a class="btn sm" href="${esc(g.googleMapsUri || gPlaceUrl(r))}" target="_blank" rel="noopener">${icon('photo')}תמונות וביקורות</a>
+        ${g.reservable ? `<a class="btn sm accent" href="${mapsUrl}" target="_blank" rel="noopener">${icon('calendar-plus')}הזמנת מקום</a>` : ''}
+        <a class="btn sm" href="${mapsUrl}" target="_blank" rel="noopener">${icon('brand-google-maps')}ביקורות בגוגל</a>
         ${g.nationalPhoneNumber ? `<a class="btn sm" href="tel:${esc(g.nationalPhoneNumber.replace(/[^\d+]/g, ''))}">${icon('phone')}<span class="num">${esc(g.nationalPhoneNumber)}</span></a>` : ''}
-      </div></div>`;
+      </div></div>
+      ${photos ? `<div class="card"><h3>${icon('photo')}תמונות <span class="note num">${photos.length}</span></h3><div class="gal">${photos.map((p, i) => `<button class="gal-ph" data-act="gallery" data-id="${r.id}" data-i="${i}" aria-label="תמונה ${i + 1}"><img src="${gPhoto(p, 400)}" alt="" loading="lazy"></button>`).join('')}</div><p class="note" style="margin:8px 0 0">התמונות מגוגל, באדיבות המצלמים.</p></div>` : ''}`;
   } else {
     googleBlock = `<a class="card tint gcard" href="${gPlaceUrl(r)}" target="_blank" rel="noopener" style="text-decoration:none">
       <span class="gl">${icon('brand-google-maps')}</span>
@@ -512,11 +538,12 @@ function renderSheet() {
       <div class="sheet-top"><button class="glass" data-act="close-sheet" aria-label="סגירה">${icon('x')}</button>
       <button class="glass ${fav ? 'on' : ''}" data-act="fav" data-id="${r.id}" aria-label="${fav ? 'הסרה מהמועדפים' : 'הוספה למועדפים'}" aria-pressed="${fav}">${icon(fav ? 'heart-f' : 'heart')}</button></div></div>
     <div class="sheet-body">
-      <div><h2 class="r-title">${esc(r.n)}</h2><div class="r-sub">${c.l} · ${esc(r.c)}${r.chain ? ' · סניף כשר של רשת' : ''}</div></div>
+      <div><h2 class="r-title">${esc(r.n)}</h2><div class="r-sub">${c.l} · ${esc(r.c)}${r.chain ? ' · סניף כשר של רשת' : ''}</div>
+        ${g && g.rating ? `<div class="r-grate"><span class="g-rate big">${icon('star-f')}<b class="num">${g.rating.toFixed(1)}</b><small class="num">(${fmtCount(g.userRatingCount)} בגוגל)</small></span>${priceText(g) ? `<span class="price num">${priceText(g)}</span>` : ''}</div>` : ''}</div>
       <div class="facts"><span class="st ${st.s}">${st.t}</span>${KIND[r.k] ? `<span class="kind ${KIND[r.k]}">${r.k}</span>` : ''}${r.hk ? `<span class="hk">${icon('circle-check')}כשרות גבוהה</span>` : ''}
         <span class="walk">${icon('walk')}<span class="num">${fmtDist(r._d)} · ${walkMin(r._d) <= 60 ? `${walkMin(r._d)} דק׳ הליכה` : 'רחוק להליכה'}</span></span></div>
       <div class="actions">
-        <a class="act primary" href="${gDirUrl(r)}" target="_blank" rel="noopener">${icon('navigation')}ניווט</a>
+        <button class="act primary" data-act="route" data-id="${r.id}">${icon('navigation')}ניווט</button>
         <a class="act" href="${wazeUrl(r)}" target="_blank" rel="noopener">${icon('brand-waze')}Waze</a>
         <a class="act" href="${gPlaceUrl(r)}" target="_blank" rel="noopener">${icon('brand-google-maps')}בגוגל</a>
         <button class="act" data-act="share-r" data-id="${r.id}">${icon('share')}שיתוף</button>
@@ -534,21 +561,234 @@ function starsHtml(v) {
   const n = Math.round(v);
   return `<span class="stars" aria-label="${v.toFixed ? v.toFixed(1) : v} מתוך 5">${[1, 2, 3, 4, 5].map(i => `<span class="${i <= n ? '' : 'off'}">${icon('star-f')}</span>`).join('')}</span>`;
 }
-const gPhoto = (p, w = 800) => `https://places.googleapis.com/v1/${p.name}/media?maxWidthPx=${w}&key=${CFG.googleKey}`;
-async function loadGoogle(r) {
-  if (S.google[r.pid] !== undefined) return;
-  S.google[r.pid] = { loading: true, error: true };
+/* ================= Google Places (live; needs googleKey in config.js) ================= */
+const G = { cache: new Map(), pending: new Set(), timer: null, dirtySel: false };
+const G_FIELDS = 'rating,userRatingCount,priceLevel,priceRange,photos,websiteUri,googleMapsUri,reservable,nationalPhoneNumber,editorialSummary,currentOpeningHours.openNow,regularOpeningHours.weekdayDescriptions';
+const gOn = () => !!CFG.googleKey;
+const gPeek = r => (r && r.pid && G.cache.get(r.pid)) || null;
+function gGet(r) {
+  if (!gOn() || !r || !r.pid) return null;
+  const hit = G.cache.get(r.pid);
+  if (hit) return hit.error ? null : hit;
+  if (!G.pending.has(r.pid)) { G.pending.add(r.pid); fetchPlace(r); }
+  return null;
+}
+async function fetchPlace(r) {
+  let data;
   try {
-    const res = await fetch(`https://places.googleapis.com/v1/places/${r.pid}?languageCode=he&regionCode=IL`, {
-      headers: {
-        'X-Goog-Api-Key': CFG.googleKey,
-        'X-Goog-FieldMask': 'rating,userRatingCount,websiteUri,googleMapsUri,reservable,photos,nationalPhoneNumber,editorialSummary',
-      },
+    const res = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(r.pid)}?languageCode=he&regionCode=IL`, {
+      headers: { 'X-Goog-Api-Key': CFG.googleKey, 'X-Goog-FieldMask': G_FIELDS },
     });
     if (!res.ok) throw new Error(String(res.status));
-    S.google[r.pid] = await res.json();
-  } catch { S.google[r.pid] = { error: true }; }
-  if (S.sel === r.id) renderSheet();
+    data = await res.json();
+  } catch { data = { error: true }; }
+  G.cache.set(r.pid, data);
+  G.pending.delete(r.pid);
+  const sel = S.RM.get(S.sel);
+  if (sel && sel.pid === r.pid) G.dirtySel = true;
+  clearTimeout(G.timer);
+  G.timer = setTimeout(() => {
+    if (S.tab === 'map') renderView();
+    if (G.dirtySel && !$('#sheet').hidden) { G.dirtySel = false; renderSheet(); }
+  }, 150);
+}
+const gPhoto = (p, w = 800) => `https://places.googleapis.com/v1/${p.name}/media?maxWidthPx=${w}&key=${CFG.googleKey}`;
+function credit(p, cls) {
+  const a = p && p.authorAttributions && p.authorAttributions[0];
+  return a ? `<a class="${cls}" href="${esc(a.uri)}" target="_blank" rel="noopener">${esc(a.displayName)} · Google</a>` : `<span class="${cls}">Google</span>`;
+}
+const fmtCount = n => { n = +n || 0; return n < 1000 ? String(n) : `${(n / 1000).toFixed(n < 10000 ? 1 : 0).replace(/\.0$/, '')}K`; };
+function priceText(g) {
+  if (!g || g.error) return '';
+  const pr = g.priceRange;
+  if (pr && pr.startPrice) {
+    const cur = (pr.startPrice.currencyCode || 'ILS') === 'ILS' ? '₪' : `${pr.startPrice.currencyCode} `;
+    const a = +pr.startPrice.units || 0, b = pr.endPrice ? +pr.endPrice.units : null;
+    return b ? `${cur}${a}–${b}` : `${cur}${a}+`;
+  }
+  return { PRICE_LEVEL_FREE: 'חינם', PRICE_LEVEL_INEXPENSIVE: '₪', PRICE_LEVEL_MODERATE: '₪₪', PRICE_LEVEL_EXPENSIVE: '₪₪₪', PRICE_LEVEL_VERY_EXPENSIVE: '₪₪₪₪' }[g.priceLevel] || '';
+}
+function openGallery(rid, i = 0) {
+  const r = S.RM.get(+rid), g = gPeek(r);
+  if (!g || !g.photos || !g.photos.length) return;
+  const ph = g.photos.slice(0, 10), lb = $('#lightbox');
+  lb.innerHTML = `<div class="lb-top"><button class="glass" data-act="gallery-close" aria-label="סגירה">${icon('x')}</button><b>${esc(r.n)}</b><span class="num" id="lbCount">${i + 1}/${ph.length}</span></div>
+    <div class="lb-strip" id="lbStrip">${ph.map((p, k) => `<figure><img src="${gPhoto(p, 1400)}" alt="תמונה ${k + 1}" ${Math.abs(k - i) > 1 ? 'loading="lazy"' : ''}>${credit(p, 'lb-credit')}</figure>`).join('')}</div>`;
+  lb.hidden = false;
+  const strip = $('#lbStrip');
+  requestAnimationFrame(() => { strip.scrollLeft = strip.clientWidth * i; });
+  strip.addEventListener('scroll', () => {
+    const k = Math.round(strip.scrollLeft / Math.max(1, strip.clientWidth));
+    const c = $('#lbCount'); if (c) c.textContent = `${Math.min(ph.length, k + 1)}/${ph.length}`;
+  }, { passive: true });
+}
+function galleryStep(dir) {
+  const strip = $('#lbStrip'); if (!strip) return;
+  strip.scrollBy({ left: dir * strip.clientWidth, behavior: 'smooth' });
+}
+
+/* ================= in-app route (OpenStreetMap routing; voice navigation via Google/Waze) ================= */
+const RT = { layers: [], watch: null, data: null, rid: null, mode: 'foot', live: false, follow: true, lastReroute: 0, from: null, gps: false, arrived: false, showSteps: false, loading: false, err: '', progress: 0, meMk: null, wake: null };
+const ROUTER = CFG.routing || 'https://routing.openstreetmap.de';
+const meDotIcon = () => L.divIcon({ className: 'pin-wrap', html: '<div class="me-dot rt"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
+const isRouting = () => document.body.classList.contains('routing');
+function getPos(timeout = 7000) {
+  return new Promise(res => {
+    if (!navigator.geolocation) { res(null); return; }
+    navigator.geolocation.getCurrentPosition(p => res({ lat: p.coords.latitude, lng: p.coords.longitude }), () => res(null), { enableHighAccuracy: true, timeout, maximumAge: 30000 });
+  });
+}
+async function startRoute(rid, mode) {
+  const r = S.RM.get(+rid);
+  if (!r) return;
+  endRoute();
+  Object.assign(RT, { rid: r.id, mode: mode || RT.mode || 'foot', arrived: false, err: '', loading: true, showSteps: false, progress: 0, data: null });
+  $('#sheet').hidden = true; document.body.classList.remove('sheet-open'); document.body.classList.add('routing');
+  S.sel = r.id; drawMarkers(); renderRoute();
+  const pos = await getPos();
+  RT.gps = !!pos;
+  RT.from = pos || { lat: S.origin.lat, lng: S.origin.lng };
+  if (pos) setOrigin({ lat: pos.lat, lng: pos.lng, label: 'המיקום שלך', src: 'gps' }, { save: false });
+  await computeRoute();
+}
+async function computeRoute() {
+  const r = S.RM.get(RT.rid);
+  if (!r || !RT.from) return;
+  RT.loading = true; renderRoute();
+  const prof = RT.mode === 'car' ? ['routed-car', 'driving'] : ['routed-foot', 'foot'];
+  try {
+    const res = await fetch(`${ROUTER}/${prof[0]}/route/v1/${prof[1]}/${RT.from.lng},${RT.from.lat};${r.lng},${r.lat}?overview=full&geometries=geojson&steps=true`);
+    const d = await res.json();
+    if (d.code !== 'Ok' || !d.routes || !d.routes[0]) throw new Error(d.code || 'route');
+    const rt = d.routes[0];
+    const coords = rt.geometry.coordinates.map(([x, y]) => [y, x]);
+    const cum = [0];
+    for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + dist({ lat: coords[i - 1][0], lng: coords[i - 1][1] }, { lat: coords[i][0], lng: coords[i][1] }));
+    const k = cum[cum.length - 1] ? rt.distance / cum[cum.length - 1] : 1;
+    let at = 0;
+    const steps = rt.legs[0].steps.map(st => { const o = { m: st.maneuver, name: st.name || '', d: st.distance, at }; at += st.distance; return o; });
+    RT.data = { coords, cum: cum.map(c => c * k), total: rt.distance, dur: rt.duration, steps };
+    RT.progress = 0; RT.err = '';
+  } catch {
+    RT.data = null; RT.err = 'לא הצלחנו לחשב מסלול כרגע. אפשר לנווט עם גוגל מפות או Waze.';
+  }
+  RT.loading = false;
+  drawRoute(); renderRoute();
+  if (RT.data && !RT.live) fitRoute();
+}
+function clearRouteLayers() { RT.layers.forEach(l => map.removeLayer(l)); RT.layers = []; }
+function drawRoute() {
+  clearRouteLayers();
+  if (!RT.data) return;
+  const foot = RT.mode === 'foot';
+  RT.layers.push(L.polyline(RT.data.coords, { color: '#ffffff', weight: foot ? 10 : 11, opacity: 0.95, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(map));
+  RT.layers.push(L.polyline(RT.data.coords, { color: '#1d6ff2', weight: foot ? 6 : 7, opacity: 1, dashArray: foot ? '0.1 11' : null, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(map));
+  if (RT.gps) {
+    if (!RT.meMk) RT.meMk = L.marker([RT.from.lat, RT.from.lng], { icon: meDotIcon(), interactive: false, keyboard: false, zIndexOffset: 2000 }).addTo(map);
+  } else {
+    RT.layers.push(L.marker([RT.from.lat, RT.from.lng], { icon: L.divIcon({ className: 'pin-wrap', html: `<div class="base-dot">${icon('flag')}</div>`, iconSize: [30, 30], iconAnchor: [15, 15] }), interactive: false, keyboard: false }).addTo(map));
+  }
+}
+function fitRoute() {
+  if (!RT.data) return;
+  const desk = isDesk(), card = $('#routeCard').getBoundingClientRect().height || 260;
+  map.fitBounds(L.latLngBounds(RT.data.coords), {
+    paddingTopLeft: [36, desk ? 48 : 90], paddingBottomRight: [desk ? 440 : 36, desk ? 48 : card + 24], maxZoom: 17, animate: true,
+  });
+}
+const fmtDur = s => { const m = Math.max(1, Math.round(s / 60)); return m < 60 ? `${m} דק׳` : `${Math.floor(m / 60)}:${pad(m % 60)} ש׳`; };
+const TURN_HE = { left: 'פנו שמאלה', right: 'פנו ימינה', 'slight left': 'פנו קלות שמאלה', 'slight right': 'פנו קלות ימינה', 'sharp left': 'פנו בחדות שמאלה', 'sharp right': 'פנו בחדות ימינה', straight: 'המשיכו ישר', uturn: 'בצעו פניית פרסה' };
+function stepIcon(m) {
+  if (m.type === 'arrive') return 'flag';
+  if (m.type === 'depart') return RT.mode === 'car' ? 'car' : 'walk';
+  if (/roundabout|rotary/.test(m.type)) return 'arrow-rotary-right';
+  return { left: 'corner-up-left', right: 'corner-up-right', 'slight left': 'arrow-bear-left', 'slight right': 'arrow-bear-right', 'sharp left': 'arrow-sharp-turn-left', 'sharp right': 'arrow-sharp-turn-right', uturn: 'arrow-back-up' }[m.modifier] || 'arrow-up';
+}
+function stepText(st, r) {
+  const m = st.m, nm = st.name;
+  if (m.type === 'arrive') return `הגעתם ל${r.n}`;
+  if (m.type === 'depart') return nm ? `יוצאים לדרך ב${nm}` : 'יוצאים לדרך';
+  if (/roundabout|rotary/.test(m.type)) return `בכיכר, צאו ביציאה ה-${m.exit || 1}${nm ? ` אל ${nm}` : ''}`;
+  if ((m.type === 'continue' || m.type === 'new name') && (!m.modifier || m.modifier === 'straight')) return nm ? `המשיכו ב${nm}` : 'המשיכו ישר';
+  const t = TURN_HE[m.modifier] || 'המשיכו';
+  return nm ? `${t} אל ${nm}` : t;
+}
+function renderRoute() {
+  const el = $('#routeCard'), r = S.RM.get(RT.rid);
+  if (!r || !isRouting()) { el.hidden = true; return; }
+  const d = RT.data;
+  const left = d ? Math.max(0, d.total - RT.progress) : 0;
+  const leftDur = d ? d.dur * (left / (d.total || 1)) : 0;
+  const next = d && RT.live && !RT.arrived ? d.steps.find(st => st.at > RT.progress + 5) : null;
+  const gMode = RT.mode === 'car' ? 'driving' : 'walking';
+  el.innerHTML = `
+    <div class="rc-head"><div class="grow"><small>${RT.live ? 'בדרך אל' : 'מסלול אל'}</small><h3>${esc(r.n)}</h3></div>
+      <button class="icon-btn" data-act="route-close" aria-label="סיום המסלול">${icon('x')}</button></div>
+    ${RT.arrived ? `<div class="rc-arrive"><b>הגעת! בתיאבון</b><div class="row">${S.me ? `<button class="btn sm primary" data-act="checkin" data-id="${r.id}">${icon('map-pin')}אכלתי כאן</button>` : ''}<button class="btn sm" data-act="route-close">סיום</button></div></div>` : ''}
+    ${next ? `<div class="rc-next">${icon(stepIcon(next.m))}<div><b>${esc(stepText(next, r))}</b><small class="num">בעוד ${fmtDist(Math.max(0, next.at - RT.progress))}</small></div></div>` : ''}
+    <div class="seg rc-mode"><button data-act="route-mode" data-v="foot" aria-pressed="${RT.mode === 'foot'}">${icon('walk')}הליכה</button><button data-act="route-mode" data-v="car" aria-pressed="${RT.mode === 'car'}">${icon('car')}רכב</button></div>
+    <div class="rc-sum">${RT.loading ? '<span class="note">מחשב מסלול…</span>' : RT.err ? `<span class="err">${esc(RT.err)}</span>` : `<b class="num">${fmtDur(leftDur)}</b><span class="num">${fmtDist(left)}</span><span class="num">הגעה ב-${hhmm(new Date(Date.now() + leftDur * 1000))}</span>`}</div>
+    ${!RT.gps && !RT.loading && d ? `<p class="note" style="margin:0">המסלול מחושב מ${esc(originLabel())}, כי אין גישה למיקום שלך.</p>` : ''}
+    <div class="row rc-actions">
+      <button class="btn primary grow" data-act="route-live" ${d && !RT.arrived ? '' : 'disabled'}>${icon(RT.live ? 'circle-x' : 'navigation')}${RT.live ? 'עצירת מעקב' : 'יוצאים לדרך'}</button>
+      <button class="icon-btn" data-act="route-steps" aria-label="שלבי המסלול" aria-pressed="${RT.showSteps}" ${d ? '' : 'disabled'}>${icon('route-2')}</button>
+      <a class="icon-btn" href="${gDirUrl(r)}&travelmode=${gMode}" target="_blank" rel="noopener" aria-label="ניווט קולי בגוגל מפות">${icon('brand-google-maps')}</a>
+      <a class="icon-btn" href="${wazeUrl(r)}" target="_blank" rel="noopener" aria-label="ניווט ב-Waze">${icon('brand-waze')}</a>
+    </div>
+    ${RT.showSteps && d ? `<ol class="rc-steps">${d.steps.map(st => `<li class="${st.at + st.d < RT.progress ? 'done' : ''}">${icon(stepIcon(st.m))}<span>${esc(stepText(st, r))}</span><small class="num">${st.d > 0 ? fmtDist(st.d) : ''}</small></li>`).join('')}</ol>` : ''}
+    <p class="note rc-credit">מסלול לפי OpenStreetMap. לניווט קולי: גוגל מפות או Waze.</p>`;
+  el.hidden = false;
+}
+function toggleLive() {
+  if (RT.live) { stopLive(); renderRoute(); return; }
+  if (!navigator.geolocation) { toast('הדפדפן לא תומך במיקום'); return; }
+  RT.live = true; RT.follow = true; RT.showSteps = false;
+  RT.watch = navigator.geolocation.watchPosition(onRoutePos, () => {
+    toast('אין גישה למיקום. אפשר לנווט עם גוגל מפות או Waze');
+    stopLive(); renderRoute();
+  }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+  try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { RT.wake = l; }).catch(() => {}); } catch { /* no wake lock */ }
+  renderRoute();
+}
+function stopLive() {
+  RT.live = false;
+  if (RT.watch != null) navigator.geolocation.clearWatch(RT.watch);
+  RT.watch = null;
+  if (RT.wake) { RT.wake.release().catch(() => {}); RT.wake = null; }
+}
+function onRoutePos(p) {
+  const me = { lat: p.coords.latitude, lng: p.coords.longitude }, r = S.RM.get(RT.rid);
+  if (!r) return;
+  if (!RT.meMk) RT.meMk = L.marker([me.lat, me.lng], { icon: meDotIcon(), interactive: false, keyboard: false, zIndexOffset: 2000 }).addTo(map);
+  else RT.meMk.setLatLng([me.lat, me.lng]);
+  if (!RT.gps) { RT.gps = true; RT.from = me; computeRoute(); return; }
+  if (!RT.data) return;
+  let best = 0, bd = Infinity;
+  RT.data.coords.forEach((c, i) => { const dd = dist(me, { lat: c[0], lng: c[1] }); if (dd < bd) { bd = dd; best = i; } });
+  RT.progress = Math.max(RT.progress, RT.data.cum[best]);
+  if (dist(me, r) < 30 || RT.data.total - RT.progress < 20) {
+    if (!RT.arrived) { RT.arrived = true; stopLive(); toast('הגעת! בתיאבון'); }
+  } else if (bd > 60 && Date.now() - RT.lastReroute > 20000) {
+    RT.lastReroute = Date.now(); RT.from = me; RT.progress = 0; computeRoute(); return;
+  }
+  if (RT.follow) panToMe([me.lat, me.lng]);
+  renderRoute();
+}
+function panToMe(ll) {
+  const z = Math.max(map.getZoom(), 17), pt = map.project(ll, z);
+  if (isDesk()) pt.x += 200; else pt.y += ($('#routeCard').getBoundingClientRect().height || 300) / 2;
+  map.setView(map.unproject(pt, z), z, { animate: true });
+}
+function endRoute() {
+  stopLive(); if (map) clearRouteLayers();
+  if (RT.meMk) { map.removeLayer(RT.meMk); RT.meMk = null; }
+  document.body.classList.remove('routing');
+  const el = $('#routeCard'); if (el) el.hidden = true;
+}
+function stopRoute() {
+  const rid = RT.rid;
+  endRoute(); RT.data = null; RT.rid = null;
+  if (rid) openRestaurant(rid, { fly: false });
 }
 
 /* ----- meetups ----- */

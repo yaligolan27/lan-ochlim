@@ -200,7 +200,15 @@ document.addEventListener('click', async e => {
     case 'clear': S.f = { open: false, walk: false, kind: null, hk: false, fav: false, meet: false, cat: null }; S.q = ''; $('#q').value = ''; renderAll(); break;
     case 'open-r': closeModal(); if (S.tab !== 'map' && !isDesk()) setTab('map'); openRestaurant(id); break;
     case 'close-sheet': closeSheet(); break;
-    case 'locate': locate(); break;
+    case 'locate': if (isRouting()) { RT.follow = true; if (RT.meMk) { panToMe(RT.meMk.getLatLng()); break; } } locate(); break;
+    case 'basemap': S.basemap = S.basemap === 'sat' ? 'map' : 'sat'; store.set('basemap', S.basemap); renderTop(); setTiles(); break;
+    case 'route': startRoute(id); break;
+    case 'route-mode': if (RT.mode !== el.dataset.v) { RT.mode = el.dataset.v; computeRoute(); } break;
+    case 'route-live': toggleLive(); break;
+    case 'route-steps': RT.showSteps = !RT.showSteps; renderRoute(); break;
+    case 'route-close': stopRoute(); break;
+    case 'gallery': openGallery(id, +el.dataset.i || 0); break;
+    case 'gallery-close': $('#lightbox').hidden = true; $('#lightbox').innerHTML = ''; break;
     case 'locate-close': closeModal(); locate(); break;
     case 'origin': openOrigin(); break;
     case 'pick-base': closeModal(); closeSheet(); if (S.tab !== 'map') setTab('map'); S.panel = 'peek'; renderTabs(); S.picking = true; toast('הקישו על המפה במקום שממנו יוצאים לאכול'); break;
@@ -258,7 +266,14 @@ document.addEventListener('click', async e => {
   }
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else if (!$('#sheet').hidden) closeSheet(); }
+  const lb = $('#lightbox');
+  if (!lb.hidden) {
+    if (e.key === 'Escape') { lb.hidden = true; lb.innerHTML = ''; }
+    if (e.key === 'ArrowLeft') galleryStep(-1);
+    if (e.key === 'ArrowRight') galleryStep(1);
+    return;
+  }
+  if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else if (isRouting()) stopRoute(); else if (!$('#sheet').hidden) closeSheet(); }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.ritem')) { e.preventDefault(); e.target.click(); }
 });
 document.addEventListener('input', e => {
@@ -364,6 +379,7 @@ async function boot() {
   applyTheme();
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (store.get('theme', 'auto') === 'auto' && map) setTiles(); });
   S.origin = store.get('origin', null) || DEFAULT_ORIGIN;
+  S.basemap = store.get('basemap', 'map');
   try {
     S.R = await (await fetch('restaurants.json', { cache: 'no-cache' })).json();
   } catch { S.R = []; toast('לא הצלחנו לטעון את רשימת המסעדות. רעננו את הדף'); }

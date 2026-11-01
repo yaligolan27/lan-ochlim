@@ -46,6 +46,7 @@
   </aside>
 
   <div class="map-tools" id="mapTools">
+    <button class="round-btn" data-act="basemap" id="baseBtn" hidden aria-label="תצוגת לווין"></button>
     <button class="round-btn" data-act="locate" aria-label="המיקום שלי" title="המיקום שלי"></button>
   </div>
   <button class="fab" id="fab" data-act="now">
@@ -53,6 +54,8 @@
   </button>
 
   <section class="sheet" id="sheet" hidden aria-modal="false" role="dialog" aria-label="פרטי מסעדה"></section>
+  <section class="route-card" id="routeCard" hidden aria-label="מסלול"></section>
+  <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="תמונות"></div>
   <div class="modal" id="modal" hidden><div class="modal-card" id="modalCard" role="dialog" aria-modal="true"></div></div>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
